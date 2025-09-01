@@ -1,17 +1,55 @@
 name: Build-LaunchPad
 on:
-  workflow_dispatch: # запуск руками з вкладки Actions
+  workflow_dispatch:    # запуск руками з вкладки Actions
+  push:
+    branches: [ main, master, feature/** ]
+
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout (with submodules & LFS)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          lfs: true
+
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
+
+      # (опціонально) якщо у репо нема Directory.Build.props —
+      # тимчасово додаємо ReferencePath до папки з DLL гри/BepInEx.
+      - name: Ensure ReferencePath override
+        shell: pwsh
+        run: |
+          $props = @"
+<Project>
+  <PropertyGroup>
+    <GameLibs>${{ github.workspace }}\ThirdParty\StationeersLibs</GameLibs>
+    <ReferencePath>$(ReferencePath);$(GameLibs)</ReferencePath>
+  </PropertyGroup>
+</Project>
+"@
+          $path = "${{ github.workspace }}\Directory.Build.props"
+          if (-not (Test-Path $path)) { $props | Out-File -Encoding UTF8 $path }
+
+      - name: Detect solution
+        shell: pwsh
+        run: |
+          $sln = Get-ChildItem -Recurse -Filter *.sln | Select-Object -First 1
+          if (-not $sln) { Write-Error "No .sln found in repository"; exit 1 }
+          "SLN_PATH=$($sln.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Restore NuGet
-        run: nuget restore
-      - name: Build Release
-        run: msbuild /m /p:Configuration=Release
+        shell: pwsh
+        run: nuget restore "$env:SLN_PATH"
+
+      - name: Build (Release)
+        shell: pwsh
+        run: msbuild "$env:SLN_PATH" /m /p:Configuration=Release /p:RestorePackages=false
+
       - name: Upload DLLs
         uses: actions/upload-artifact@v4
         with:
@@ -19,3 +57,4 @@ jobs:
           path: |
             **/bin/Release/*.dll
             **/bin/Release/*.pdb
+            !**/obj/**
